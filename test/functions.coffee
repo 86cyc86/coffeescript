@@ -86,6 +86,15 @@ test "self-referencing functions", ->
   changeMe()
   eq changeMe, 2
 
+test "#2009: don't touch `` `this` ``", ->
+  nonceA = {}
+  nonceB = {}
+  fn = null
+  (->
+    fn = => this is nonceA and `this` is nonceB
+  ).call nonceA
+  ok fn.call nonceB
+
 
 # Parameter List Features
 
@@ -148,6 +157,11 @@ test "destructuring in function definition", ->
     eq context.d, 3
     eq e, 4
   ).call context, {a: [1], d: 3}
+
+  (({a: aa = 1, b: bb = 2}) ->
+    eq 5, aa
+    eq 2, bb
+  ) {a: 5}
 
   ajax = (url, {
     async = true,

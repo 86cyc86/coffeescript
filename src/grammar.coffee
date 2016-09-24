@@ -83,17 +83,22 @@ grammar =
     o 'Body TERMINATOR'
   ]
 
-  # Block and statements, which make up a line in a body.
+  # Block and statements, which make up a line in a body. YieldReturn is a
+  # statement, but not included in Statement because that results in an ambiguous
+  # grammar.
   Line: [
     o 'Expression'
     o 'Statement'
+    o 'YieldReturn'
   ]
 
   # Pure statements which cannot be expressions.
   Statement: [
     o 'Return'
     o 'Comment'
-    o 'STATEMENT',                              -> new Literal $1
+    o 'STATEMENT',                              -> new StatementLiteral $1
+    o 'Import'
+    o 'Export'
   ]
 
   # All the different types of expressions in our language. The basic unit of
@@ -113,6 +118,13 @@ grammar =
     o 'Switch'
     o 'Class'
     o 'Throw'
+    o 'Yield'
+  ]
+
+  Yield: [
+    o 'YIELD',                                  -> new Op $1, new Value new Literal ''
+    o 'YIELD Expression',                       -> new Op $1, $2
+    o 'YIELD FROM Expression',                  -> new Op $1.concat($2), $3
   ]
 
   # An indented block of expressions. Note that the [Rewriter](rewriter.html)
@@ -123,38 +135,42 @@ grammar =
     o 'INDENT Body OUTDENT',                    -> $2
   ]
 
-  # A literal identifier, a variable name or property.
   Identifier: [
-    o 'IDENTIFIER',                             -> new Literal $1
+    o 'IDENTIFIER',                             -> new IdentifierLiteral $1
+  ]
+
+  Property: [
+    o 'PROPERTY',                               -> new PropertyName $1
   ]
 
   # Alphanumerics are separated from the other **Literal** matchers because
   # they can also serve as keys in object literals.
   AlphaNumeric: [
-    o 'NUMBER',                                 -> new Literal $1
+    o 'NUMBER',                                 -> new NumberLiteral $1
     o 'String'
   ]
 
   String: [
-    o 'STRING',                                 -> new Literal $1
-    o 'STRING_START Body STRING_END',           -> new Parens $2
+    o 'STRING',                                 -> new StringLiteral $1
+    o 'STRING_START Body STRING_END',           -> new StringWithInterpolations $2
   ]
 
   Regex: [
-    o 'REGEX',                                  -> new Literal $1
-    o 'REGEX_START Invocation REGEX_END',       -> $2
+    o 'REGEX',                                  -> new RegexLiteral $1
+    o 'REGEX_START Invocation REGEX_END',       -> new RegexWithInterpolations $2.args
   ]
 
   # All of our immediate values. Generally these can be passed straight
   # through and printed to JavaScript.
   Literal: [
     o 'AlphaNumeric'
-    o 'JS',                                     -> new Literal $1
+    o 'JS',                                     -> new PassthroughLiteral $1
     o 'Regex'
-    o 'DEBUGGER',                               -> new Literal $1
-    o 'UNDEFINED',                              -> new Undefined
-    o 'NULL',                                   -> new Null
-    o 'BOOL',                                   -> new Bool $1
+    o 'UNDEFINED',                              -> new UndefinedLiteral
+    o 'NULL',                                   -> new NullLiteral
+    o 'BOOL',                                   -> new BooleanLiteral $1
+    o 'INFINITY',                               -> new InfinityLiteral $1
+    o 'NAN',                                    -> new NaNLiteral
   ]
 
   # Assignment of a variable, property, or index to a value.
@@ -183,6 +199,7 @@ grammar =
 
   SimpleObjAssignable: [
     o 'Identifier'
+    o 'Property'
     o 'ThisProperty'
   ]
 
@@ -195,6 +212,11 @@ grammar =
   Return: [
     o 'RETURN Expression',                      -> new Return $2
     o 'RETURN',                                 -> new Return
+  ]
+
+  YieldReturn: [
+    o 'YIELD RETURN Expression',                -> new YieldReturn $3
+    o 'YIELD RETURN',                           -> new YieldReturn
   ]
 
   # A block comment.
@@ -282,11 +304,11 @@ grammar =
   # The general group of accessors into an object, by property, by prototype
   # or by array index or slice.
   Accessor: [
-    o '.  Identifier',                          -> new Access $2
-    o '?. Identifier',                          -> new Access $2, 'soak'
-    o ':: Identifier',                          -> [LOC(1)(new Access new Literal('prototype')), LOC(2)(new Access $2)]
-    o '?:: Identifier',                         -> [LOC(1)(new Access new Literal('prototype'), 'soak'), LOC(2)(new Access $2)]
-    o '::',                                     -> new Access new Literal 'prototype'
+    o '.  Property',                            -> new Access $2
+    o '?. Property',                            -> new Access $2, 'soak'
+    o ':: Property',                            -> [LOC(1)(new Access new PropertyName('prototype')), LOC(2)(new Access $2)]
+    o '?:: Property',                           -> [LOC(1)(new Access new PropertyName('prototype'), 'soak'), LOC(2)(new Access $2)]
+    o '::',                                     -> new Access new PropertyName 'prototype'
     o 'Index'
   ]
 
@@ -329,12 +351,76 @@ grammar =
     o 'CLASS SimpleAssignable EXTENDS Expression Block', -> new Class $2, $4, $5
   ]
 
+  Import: [
+    o 'IMPORT String',                                                                -> new ImportDeclaration null, $2
+    o 'IMPORT ImportDefaultSpecifier FROM String',                                    -> new ImportDeclaration new ImportClause($2, null), $4
+    o 'IMPORT ImportNamespaceSpecifier FROM String',                                  -> new ImportDeclaration new ImportClause(null, $2), $4
+    o 'IMPORT { } FROM String',                                                       -> new ImportDeclaration new ImportClause(null, new ImportSpecifierList []), $5
+    o 'IMPORT { ImportSpecifierList OptComma } FROM String',                          -> new ImportDeclaration new ImportClause(null, new ImportSpecifierList $3), $7
+    o 'IMPORT ImportDefaultSpecifier , ImportNamespaceSpecifier FROM String',         -> new ImportDeclaration new ImportClause($2, $4), $6
+    o 'IMPORT ImportDefaultSpecifier , { ImportSpecifierList OptComma } FROM String', -> new ImportDeclaration new ImportClause($2, new ImportSpecifierList $5), $9
+  ]
+
+  ImportSpecifierList: [
+    o 'ImportSpecifier',                                                          -> [$1]
+    o 'ImportSpecifierList , ImportSpecifier',                                    -> $1.concat $3
+    o 'ImportSpecifierList OptComma TERMINATOR ImportSpecifier',                  -> $1.concat $4
+    o 'INDENT ImportSpecifierList OptComma OUTDENT',                              -> $2
+    o 'ImportSpecifierList OptComma INDENT ImportSpecifierList OptComma OUTDENT', -> $1.concat $4
+  ]
+
+  ImportSpecifier: [
+    o 'Identifier',                             -> new ImportSpecifier $1
+    o 'Identifier AS Identifier',               -> new ImportSpecifier $1, $3
+  ]
+
+  ImportDefaultSpecifier: [
+    o 'Identifier',                             -> new ImportDefaultSpecifier $1
+  ]
+
+  ImportNamespaceSpecifier: [
+    o 'IMPORT_ALL AS Identifier',               -> new ImportNamespaceSpecifier new Literal($1), $3
+  ]
+
+  Export: [
+    o 'EXPORT { }',                                          -> new ExportNamedDeclaration new ExportSpecifierList []
+    o 'EXPORT { ExportSpecifierList OptComma }',             -> new ExportNamedDeclaration new ExportSpecifierList $3
+    o 'EXPORT Class',                                        -> new ExportNamedDeclaration $2
+    o 'EXPORT Identifier = Expression',                      -> new ExportNamedDeclaration new Assign $2, $4, null,
+                                                                                                      moduleDeclaration: 'export'
+    o 'EXPORT Identifier = TERMINATOR Expression',           -> new ExportNamedDeclaration new Assign $2, $5, null,
+                                                                                                      moduleDeclaration: 'export'
+    o 'EXPORT Identifier = INDENT Expression OUTDENT',       -> new ExportNamedDeclaration new Assign $2, $5, null,
+                                                                                                      moduleDeclaration: 'export'
+    o 'EXPORT DEFAULT Expression',                           -> new ExportDefaultDeclaration $3
+    o 'EXPORT EXPORT_ALL FROM String',                       -> new ExportAllDeclaration new Literal($2), $4
+    o 'EXPORT { ExportSpecifierList OptComma } FROM String', -> new ExportNamedDeclaration new ExportSpecifierList($3), $7
+  ]
+
+  ExportSpecifierList: [
+    o 'ExportSpecifier',                                                          -> [$1]
+    o 'ExportSpecifierList , ExportSpecifier',                                    -> $1.concat $3
+    o 'ExportSpecifierList OptComma TERMINATOR ExportSpecifier',                  -> $1.concat $4
+    o 'INDENT ExportSpecifierList OptComma OUTDENT',                              -> $2
+    o 'ExportSpecifierList OptComma INDENT ExportSpecifierList OptComma OUTDENT', -> $1.concat $4
+  ]
+
+  ExportSpecifier: [
+    o 'Identifier',                             -> new ExportSpecifier $1
+    o 'Identifier AS Identifier',               -> new ExportSpecifier $1, $3
+    o 'Identifier AS DEFAULT',                  -> new ExportSpecifier $1, new Literal $3
+  ]
+
   # Ordinary function invocation, or a chained series of calls.
   Invocation: [
     o 'Value OptFuncExist Arguments',           -> new Call $1, $3, $2
     o 'Invocation OptFuncExist Arguments',      -> new Call $1, $3, $2
-    o 'SUPER',                                  -> new Call 'super', [new Splat new Literal 'arguments']
-    o 'SUPER Arguments',                        -> new Call 'super', $2
+    o 'Super'
+  ]
+
+  Super: [
+    o 'SUPER',                                  -> new SuperCall
+    o 'SUPER Arguments',                        -> new SuperCall $2
   ]
 
   # An optional existence check on a function.
@@ -351,13 +437,13 @@ grammar =
 
   # A reference to the *this* current object.
   This: [
-    o 'THIS',                                   -> new Value new Literal 'this'
-    o '@',                                      -> new Value new Literal 'this'
+    o 'THIS',                                   -> new Value new ThisLiteral
+    o '@',                                      -> new Value new ThisLiteral
   ]
 
   # A reference to a property on *this*.
   ThisProperty: [
-    o '@ Identifier',                           -> new Value LOC(1)(new Literal('this')), [LOC(2)(new Access($2))], 'this'
+    o '@ Property',                             -> new Value LOC(1)(new ThisLiteral), [LOC(2)(new Access($2))], 'this'
   ]
 
   # The array literal.
@@ -458,8 +544,8 @@ grammar =
   ]
 
   Loop: [
-    o 'LOOP Block',                             -> new While(LOC(1) new Literal 'true').addBody $2
-    o 'LOOP Expression',                        -> new While(LOC(1) new Literal 'true').addBody LOC(2) Block.wrap [$2]
+    o 'LOOP Block',                             -> new While(LOC(1) new BooleanLiteral 'true').addBody $2
+    o 'LOOP Expression',                        -> new While(LOC(1) new BooleanLiteral 'true').addBody LOC(2) Block.wrap [$2]
   ]
 
   # Array, object, and range comprehensions, at the most generic level.
@@ -558,9 +644,6 @@ grammar =
     o 'UNARY_MATH Expression',                  -> new Op $1 , $2
     o '-     Expression',                      (-> new Op '-', $2), prec: 'UNARY_MATH'
     o '+     Expression',                      (-> new Op '+', $2), prec: 'UNARY_MATH'
-    o 'YIELD Statement',                        -> new Op $1 , $2
-    o 'YIELD Expression',                       -> new Op $1 , $2
-    o 'YIELD FROM Expression',                  -> new Op $1.concat($2) , $3
 
     o '-- SimpleAssignable',                    -> new Op '--', $2
     o '++ SimpleAssignable',                    -> new Op '++', $2
@@ -623,7 +706,7 @@ operators = [
   ['right',     'YIELD']
   ['right',     '=', ':', 'COMPOUND_ASSIGN', 'RETURN', 'THROW', 'EXTENDS']
   ['right',     'FORIN', 'FOROF', 'BY', 'WHEN']
-  ['right',     'IF', 'ELSE', 'FOR', 'WHILE', 'UNTIL', 'LOOP', 'SUPER', 'CLASS']
+  ['right',     'IF', 'ELSE', 'FOR', 'WHILE', 'UNTIL', 'LOOP', 'SUPER', 'CLASS', 'IMPORT', 'EXPORT']
   ['left',      'POST_IF']
 ]
 
